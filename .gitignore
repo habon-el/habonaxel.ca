@@ -4,3 +4,4 @@ __pycache__/
 testbench/out/
 *.egg-info/
 .pytest_cache/
+webapp/results/

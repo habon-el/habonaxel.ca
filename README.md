@@ -36,6 +36,25 @@ prints the stitch count and an estimated run time.
 Fabric presets: `twill` (default, stable woven), `fleece`, `knit`
 (placeholder, conservative — see `src/params/presets.py` for caveats).
 
+`digitize` also accepts `--border MM` for an optional denser fill ring
+stitched along each fill region's own edge (a bolder/more raised-looking
+border via stitch density and stacking order — not literal foam 3D,
+which stays out of scope; see `src/stitches/border.py`).
+
+### Web UI (local only)
+
+A small local Flask app wraps the same pipeline with a browser UI:
+upload an image, pick a fabric preset and border width, see the
+preview and download the .dst/.pes.
+
+```bash
+pip install -r requirements.txt   # picks up Flask
+python -m webapp.app
+# open http://127.0.0.1:5000
+```
+
+Everything runs on your machine; nothing is uploaded anywhere else.
+
 ### Tests
 
 ```bash
