@@ -12,10 +12,11 @@ by editing element_id order before export.
 """
 import math
 
-from src.stitches.model import (FILL, RUNNING, SATIN, UNDERLAY_RUN,
+from src.stitches.model import (BORDER, FILL, RUNNING, SATIN, UNDERLAY_RUN,
                                  UNDERLAY_SATIN, Point, StitchBlock)
 
-# Underlay must always be sewn before the top stitching it supports, per
+# Underlay must always be sewn before the top stitching it supports, and
+# a border ring is stitched last, on top of the fill it outlines, per
 # color, regardless of which is spatially closer.
 _STAGE_PRIORITY = {
     UNDERLAY_RUN: 0,
@@ -23,6 +24,7 @@ _STAGE_PRIORITY = {
     RUNNING: 1,
     SATIN: 2,
     FILL: 2,
+    BORDER: 3,
 }
 
 

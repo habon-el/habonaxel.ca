@@ -19,6 +19,10 @@ SATIN = "satin"
 FILL = "fill"
 UNDERLAY_RUN = "underlay_run"
 UNDERLAY_SATIN = "underlay_satin"
+# An optional denser ring of fill stitched along a region's own edge, on
+# top of its interior fill, for a bolder/more raised-looking border
+# without switching fabric or thread (see src/stitches/border.py).
+BORDER = "border"
 
 
 @dataclass

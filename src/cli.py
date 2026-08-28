@@ -23,7 +23,7 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
 
 def cmd_digitize(args: argparse.Namespace) -> None:
-    digitize_image(args.input, args.fabric, args.out)
+    digitize_image(args.input, args.fabric, args.out, border_width_mm=args.border)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
         "digitize", help="Auto-digitize a clean raster/SVG logo or text image")
     digitize.add_argument("input", help="Path to a PNG/JPG/SVG input file")
     digitize.add_argument("--fabric", default="twill", choices=sorted(PRESETS))
+    digitize.add_argument("--border", type=float, default=0.0,
+                           help="Width in mm of an optional denser fill "
+                                "ring stitched along each fill region's "
+                                "edge, for a bolder/more raised-looking "
+                                "border (0 = disabled, default)")
     digitize.add_argument("--out", required=True,
                            help="Output path stem, e.g. testbench/out/design")
     digitize.set_defaults(func=cmd_digitize)

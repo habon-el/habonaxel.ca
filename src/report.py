@@ -7,7 +7,10 @@ from src.preview.runtime import estimate_runtime_seconds, format_runtime
 from src.stitches.model import StitchPlan
 
 
-def write_and_report(plan: StitchPlan, out_stem: str) -> None:
+def write_and_report(plan: StitchPlan, out_stem: str) -> dict:
+    """Writes the DST/PES/preview files, prints the CLI summary, and
+    returns the same info as a dict so non-CLI callers (e.g. the web UI
+    in webapp/app.py) can use it without scraping stdout."""
     out_dir = os.path.dirname(out_stem)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -15,9 +18,19 @@ def write_and_report(plan: StitchPlan, out_stem: str) -> None:
     paths = write_pattern(plan, out_stem)
     preview_path = render_preview(plan, f"{out_stem}_preview.png")
     runtime_s = estimate_runtime_seconds(plan)
+    stitch_count = plan.stitch_count()
 
     print(f"Wrote {paths['dst']}")
     print(f"Wrote {paths['pes']}")
     print(f"Wrote {preview_path}")
-    print(f"Stitch count: {plan.stitch_count()}")
+    print(f"Stitch count: {stitch_count}")
     print(f"Estimated run time: {format_runtime(runtime_s)}")
+
+    return {
+        "dst": paths["dst"],
+        "pes": paths["pes"],
+        "preview": preview_path,
+        "stitch_count": stitch_count,
+        "runtime_seconds": runtime_s,
+        "runtime_formatted": format_runtime(runtime_s),
+    }

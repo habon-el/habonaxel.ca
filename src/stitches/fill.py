@@ -6,13 +6,14 @@ spaced `row_spacing_mm` apart, with needle points along each row every
 region is covered with minimal travel and consecutive rows connect
 directly into each other.
 
-Known MVP simplification: for a concave region where a single scan row
-crosses the boundary more than twice (multiple disjoint segments), we
-connect the segments left-to-right with a direct stitch rather than
-routing around the gap. That can lay a short stitch across a narrow
-notch on complex concave shapes. Acceptable for the "clean simple logo"
-scope in Section 2; flagged here rather than silently producing a bad
-path, per Section 9.
+A region can have holes or be crossed by a scan row in more than one
+place (a ring/donut shape, a letter like "O", a fill region with a hole
+cut out for another color on top of it). Where that happens, connecting
+the segments with a plain stitch would sew straight across the gap --
+so generate_fill returns a *list of runs* instead of one flat point
+list: each run is a real continuous stitch path, and a jump belongs
+between runs, not a stitch across empty fabric (Section 9: don't fake
+it -- src/pathing/route.py inserts the actual JUMP/TRIM at export time).
 """
 import math
 
@@ -40,8 +41,11 @@ def _row_segments(polygon: Polygon, y: float, xmin: float, xmax: float
 
 
 def generate_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: float,
-                   stitch_length_mm: float) -> list[Point]:
-    """Return an ordered list of needle points (mm) filling `polygon`."""
+                   stitch_length_mm: float) -> list[list[Point]]:
+    """Return a list of stitchable runs (each a list of needle points, mm)
+    filling `polygon`. Almost always a single run; more than one when the
+    polygon has holes or is otherwise crossed by a row in multiple places.
+    """
     centroid = polygon.centroid
     rotated = affinity.rotate(polygon, -angle_deg, origin=centroid)
     xmin, ymin, xmax, ymax = rotated.bounds
@@ -68,4 +72,15 @@ def generate_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: float,
     # Rotate back to original design space.
     line = LineString(points_rot)
     line = affinity.rotate(line, angle_deg, origin=centroid)
-    return [(round(x, 4), round(y, 4)) for x, y in line.coords]
+    points = [(round(x, 4), round(y, 4)) for x, y in line.coords]
+
+    # Split into separate runs wherever consecutive points are farther
+    # apart than a normal within-row/between-row step -- that gap means
+    # the scan crossed a hole or a disjoint part of the shape.
+    break_threshold_mm = max(stitch_length_mm, row_spacing_mm) * 2.5
+    runs: list[list[Point]] = [[points[0]]]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if math.hypot(x1 - x0, y1 - y0) > break_threshold_mm:
+            runs.append([])
+        runs[-1].append((x1, y1))
+    return [r for r in runs if len(r) >= 2]

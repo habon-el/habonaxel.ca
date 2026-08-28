@@ -23,13 +23,12 @@ def build_demo_blocks(shape: str, fabric: FabricPreset, angle_deg: float = 45.0
 
     underlay_pts = fill_underlay(
         polygon, fabric.fill_underlay_inset_mm, fabric.running_stitch_length_mm)
-    fill_pts = generate_fill(
+    fill_runs = generate_fill(
         polygon, angle_deg, fabric.fill_row_spacing_mm, fabric.fill_stitch_length_mm)
 
-    return [
-        StitchBlock(UNDERLAY_RUN, underlay_pts, color_index=0, element_id=shape),
-        StitchBlock(FILL, fill_pts, color_index=0, element_id=shape),
-    ]
+    blocks = [StitchBlock(UNDERLAY_RUN, underlay_pts, color_index=0, element_id=shape)]
+    blocks.extend(StitchBlock(FILL, run, color_index=0, element_id=shape) for run in fill_runs)
+    return blocks
 
 
 DEMO_THREAD = ThreadColor(name="demo red", rgb=(196, 30, 40))
