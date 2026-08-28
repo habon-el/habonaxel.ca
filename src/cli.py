@@ -4,32 +4,14 @@
     python -m src.cli digitize input.png --fabric twill --out testbench/out/design
 """
 import argparse
-import os
 import sys
 
-from src.io_.export import write_pattern
 from src.params.presets import PRESETS, get_preset
 from src.pathing.order import order_by_color_then_distance
-from src.preview.render import render_preview
-from src.preview.runtime import estimate_runtime_seconds, format_runtime
+from src.pipeline import digitize_image
+from src.report import write_and_report
 from src.stitches.model import StitchPlan
 from src.stitches.shapes import DEMO_THREAD, SHAPES, build_demo_blocks
-
-
-def _write_and_report(plan: StitchPlan, out_stem: str) -> None:
-    out_dir = os.path.dirname(out_stem)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-
-    paths = write_pattern(plan, out_stem)
-    preview_path = render_preview(plan, f"{out_stem}_preview.png")
-    runtime_s = estimate_runtime_seconds(plan)
-
-    print(f"Wrote {paths['dst']}")
-    print(f"Wrote {paths['pes']}")
-    print(f"Wrote {preview_path}")
-    print(f"Stitch count: {plan.stitch_count()}")
-    print(f"Estimated run time: {format_runtime(runtime_s)}")
 
 
 def cmd_demo(args: argparse.Namespace) -> None:
@@ -37,14 +19,10 @@ def cmd_demo(args: argparse.Namespace) -> None:
     blocks = build_demo_blocks(args.shape, fabric, angle_deg=args.angle)
     ordered = order_by_color_then_distance(blocks)
     plan = StitchPlan(blocks=ordered, colors=[DEMO_THREAD])
-    _write_and_report(plan, args.out)
+    write_and_report(plan, args.out)
 
 
 def cmd_digitize(args: argparse.Namespace) -> None:
-    # Wired up in M1-M4: load_input -> regions -> stitch assignment ->
-    # pathing -> validate -> export. Kept as a clear seam rather than a
-    # silent stub so `--help` and tests don't lie about what exists yet.
-    from src.pipeline import digitize_image
     digitize_image(args.input, args.fabric, args.out)
 
 
