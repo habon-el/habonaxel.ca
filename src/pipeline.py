@@ -12,15 +12,18 @@ from src.validate.checks import validate_plan
 
 
 def digitize_image(input_path: str, fabric_name: str, out_stem: str,
-                    border_width_mm: float = 0.0) -> dict:
+                    border_width_mm: float = 0.0, force: bool = False) -> dict:
     """Runs the full pipeline and returns a dict: the write_and_report()
     result (dst/pes/preview paths, stitch_count, runtime) plus a
     "warnings" list of every non-fatal notice raised along the way.
-    Raises DigitizeScopeError (unchanged) if the input is out of scope.
+    Raises DigitizeScopeError if the input is out of scope, unless
+    force=True downgrades that rejection to a loud warning instead (see
+    src/regions/scope.py's apply_findings docstring for what this does
+    and doesn't bypass).
     """
     fabric = get_preset(fabric_name)
 
-    region_set = load_and_extract_regions(input_path)
+    region_set = load_and_extract_regions(input_path, strict=not force)
     warnings: list[str] = list(region_set.warnings)
 
     all_blocks: list[StitchBlock] = []

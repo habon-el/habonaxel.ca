@@ -23,7 +23,8 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
 
 def cmd_digitize(args: argparse.Namespace) -> None:
-    digitize_image(args.input, args.fabric, args.out, border_width_mm=args.border)
+    digitize_image(args.input, args.fabric, args.out,
+                    border_width_mm=args.border, force=args.force)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,6 +53,13 @@ def build_parser() -> argparse.ArgumentParser:
                                 "border (0 = disabled, default)")
     digitize.add_argument("--out", required=True,
                            help="Output path stem, e.g. testbench/out/design")
+    digitize.add_argument("--force", action="store_true",
+                           help="Digitize anyway when the input looks like a "
+                                "photo/gradient or has detail below the "
+                                "minimum cap height, instead of rejecting. "
+                                "Turns those checks into warnings -- the "
+                                "physical limitation they're based on "
+                                "doesn't go away, so check the result.")
     digitize.set_defaults(func=cmd_digitize)
 
     return parser

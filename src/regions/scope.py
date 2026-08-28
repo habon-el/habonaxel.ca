@@ -61,12 +61,23 @@ def check_min_feature_size(region_heights_mm: list[float]
     )
 
 
-def apply_findings(findings: list[ScopeFinding | None], warnings: list[str]
-                    ) -> None:
-    """Append warning messages; raise on the first reject finding."""
+def apply_findings(findings: list[ScopeFinding | None], warnings: list[str],
+                    strict: bool = True) -> None:
+    """Append warning messages; raise on the first reject finding.
+
+    strict=False (the --force CLI flag / web UI checkbox) downgrades a
+    would-be rejection to a loud warning instead of stopping -- an
+    explicit, informed override rather than removing the guardrail. The
+    physical limitation this check is based on doesn't go away just
+    because it isn't rejected anymore: it's still on the person running
+    it with --force to judge whether the result is actually acceptable.
+    """
     for f in findings:
         if f is None:
             continue
-        if f.reject:
+        if f.reject and strict:
             raise DigitizeScopeError(f.message)
-        warnings.append(f.message)
+        elif f.reject:
+            warnings.append(f"[forced past scope check] {f.message}")
+        else:
+            warnings.append(f.message)
