@@ -17,7 +17,10 @@ from src.stitches.shapes import DEMO_THREAD, build_demo_blocks
 # Golden values for the M0 demo circle on the twill preset. A tolerance
 # window rather than an exact match, since fill point count is sensitive
 # to floating point row-walking, not to anything semantically wrong.
-EXPECTED_STITCH_COUNT = 910
+# Re-centred from 910 when the perimeter underlay stopped keeping every
+# one of the circle polygon's vertices as a needle point (sub-minimum
+# stitches -- see src/stitches/running.py); the fill itself is unchanged.
+EXPECTED_STITCH_COUNT = 655
 STITCH_COUNT_TOLERANCE = 40
 EXPECTED_RADIUS_MM = 15.0
 BOUNDS_TOLERANCE_MM = 0.5
@@ -54,11 +57,14 @@ def test_dst_and_pes_round_trip(tmp_path):
 
     # A single-color design should read back with zero color changes and
     # a stitch count matching what we asked pyembroidery to write, within
-    # rounding from the mm -> 1/10mm unit conversion.
+    # rounding from the mm -> 1/10mm unit conversion plus the JUMP/TRIM
+    # and tie-in/tie-out lock stitches (src/io_/export.py) a real cut
+    # between this demo's underlay and fill blocks adds -- neither is
+    # part of plan.stitch_count() (which only counts StitchBlock points).
     assert dst.count_color_changes() == 0
     assert pes.count_color_changes() == 0
-    assert abs(len(dst.stitches) - plan.stitch_count()) <= 5
-    assert abs(len(pes.stitches) - plan.stitch_count()) <= 5
+    assert abs(len(dst.stitches) - plan.stitch_count()) <= 10
+    assert abs(len(pes.stitches) - plan.stitch_count()) <= 10
 
     minx, miny, maxx, maxy = (v / 10 for v in dst.bounds())
     assert minx == pytest.approx(-EXPECTED_RADIUS_MM, abs=BOUNDS_TOLERANCE_MM)

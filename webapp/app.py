@@ -16,9 +16,14 @@ import uuid
 from flask import Flask, abort, request, send_from_directory
 from werkzeug.utils import secure_filename
 
+from src.jobs import JobSpec, has_job_spec, load_job_spec, save_job_spec
 from src.params.presets import PRESETS
 from src.pipeline import digitize_image
 from src.regions.model import DigitizeScopeError
+from src.review.corrections import CorrectionValidationError, parse_correction_form
+from src.review.rebuild import rebuild_job
+from src.stitches.model import (DEFAULT_FILL_STYLE, FILL_STYLE_LABELS,
+                                 FILL_STYLES, UNIFORM_FILL_ANGLE_DEG)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
@@ -58,6 +63,66 @@ def _page(body: str) -> str:
                 background: #eee; border-radius: 6px; text-decoration: none; color: #222; }}
   a.download:hover {{ background: #ddd; }}
   .back {{ font-size: 0.9rem; }}
+  #stitchCanvas {{ border: 1px solid #ddd; border-radius: 8px; background: white;
+                   display: block; max-width: 100%; }}
+  .player-controls {{ display: flex; align-items: center; gap: 12px; margin-top: 10px;
+                       flex-wrap: wrap; }}
+  .player-controls button {{ margin: 0; padding: 8px 16px; }}
+  .player-controls input[type=range] {{ flex: 1; min-width: 160px; }}
+  .player-controls select {{ width: auto; padding: 6px; }}
+  #stitchCounter {{ font-variant-numeric: tabular-nums; font-size: 0.9rem; color: #444; min-width: 90px; }}
+  .legend {{ display: flex; gap: 16px; margin-top: 8px; font-size: 0.85rem; color: #555; }}
+  .legend span {{ display: inline-flex; align-items: center; gap: 6px; }}
+  .swatch {{ width: 14px; height: 3px; display: inline-block; }}
+  .summary-bar {{ display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 14px 0;
+                  font-size: 0.88rem; color: #333; }}
+  .summary-bar b {{ color: #111; }}
+  .summary-bar .review {{ color: #a94442; font-weight: 600; }}
+  table.regions {{ width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.85rem; }}
+  table.regions th, table.regions td {{ text-align: left; padding: 6px 8px;
+                                         border-bottom: 1px solid #eee; }}
+  table.regions th {{ color: #666; font-weight: 600; font-size: 0.78rem;
+                       text-transform: uppercase; letter-spacing: 0.02em; }}
+  table.regions tr.needs-review {{ background: #fff8e1; }}
+  .chip {{ display: inline-block; padding: 1px 8px; border-radius: 100px;
+           font-size: 0.75rem; font-weight: 600; }}
+  .chip.satin {{ background: #e3ecfa; color: #1c5aaa; }}
+  .chip.fill {{ background: #eafaf0; color: #1a7a41; }}
+  .chip.running {{ background: #f3ecfa; color: #6a3aa9; }}
+  .thread-dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+                 margin-right: 5px; vertical-align: -1px; box-shadow: 0 0 0 1px rgba(0,0,0,.15) inset; }}
+  details.region-details summary {{ cursor: pointer; font-weight: 600; margin-top: 18px; }}
+  tr.region-row {{ cursor: pointer; }}
+  tr.region-row:hover {{ background: #f2f6fb; }}
+  .preview-frame {{ position: relative; display: inline-block; max-width: 100%; line-height: 0; }}
+  .region-overlay {{ position: absolute; border: 2px solid rgba(28,90,170,0.65);
+                      background: rgba(28,90,170,0.07); box-sizing: border-box;
+                      text-decoration: none; }}
+  .region-overlay:hover {{ background: rgba(28,90,170,0.25); }}
+  .region-overlay.needs-review {{ border-color: #a94442; }}
+  .region-overlay.corrected {{ border-style: dashed; border-width: 3px; }}
+  details.region-form {{ background: #f7f9fb; border: 1px solid #e2e6ea; border-radius: 8px;
+                          padding: 10px 14px; margin-top: 10px; }}
+  details.region-form summary {{ cursor: pointer; font-weight: 600; margin-top: 0; }}
+  details.region-form summary .chip {{ margin-left: 6px; }}
+  .correction-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                       gap: 10px 14px; margin-top: 10px; }}
+  .correction-grid label {{ font-size: 0.8rem; margin: 0; font-weight: 600; color: #444; }}
+  .correction-grid input, .correction-grid select {{ margin-top: 4px; font-size: 0.9rem; }}
+  .notice {{ background: #eafaf0; border: 1px solid #b8e2c8; border-radius: 8px;
+             padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; }}
+  a.review-link {{ display: inline-block; margin-top: 10px; font-weight: 600; }}
+  .fill-style-picker {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                         gap: 10px; margin-top: 6px; }}
+  .fill-style-option {{ border: 2px solid #ddd; border-radius: 8px; padding: 8px;
+                         cursor: pointer; text-align: center; font-weight: normal; }}
+  .fill-style-option:has(input:checked) {{ border-color: #1c5aaa; background: #f2f6fb; }}
+  .fill-style-option img {{ width: 100%; border-radius: 4px; display: block; margin-bottom: 6px;
+                             border: 1px solid #eee; }}
+  .fill-style-option input {{ width: auto; margin-right: 6px; }}
+  .fill-style-option span {{ font-size: 0.82rem; }}
+  .fill-style-mini {{ display: flex; align-items: center; gap: 8px; margin-top: 4px; }}
+  .fill-style-mini img {{ width: 56px; height: auto; border: 1px solid #eee; border-radius: 4px; }}
 </style>
 </head>
 <body>
@@ -65,6 +130,26 @@ def _page(body: str) -> str:
 {body}
 </body>
 </html>"""
+
+
+def _fill_style_picker_html(name: str, current: str, id_prefix: str = "fs") -> str:
+    """A radio-button grid, one option per real fill style
+    (src/stitches/model.py's FILL_STYLES), each showing the actual
+    rendered stitch swatch (testbench/generate_fill_previews.py) next
+    to its name -- so the choice is made with a real visual reference,
+    not just a name in a dropdown. Used both for the upload form's
+    design-wide default and (compactly) for a per-region override."""
+    options = []
+    for style in FILL_STYLES:
+        checked = " checked" if style == current else ""
+        input_id = f"{id_prefix}-{name}-{style}"
+        options.append(f"""
+    <label class="fill-style-option" for="{input_id}">
+      <img src="/static/fill_previews/{style}.png" alt="{FILL_STYLE_LABELS[style]} sample">
+      <input type="radio" id="{input_id}" name="{name}" value="{style}"{checked}>
+      <span>{FILL_STYLE_LABELS[style]}</span>
+    </label>""")
+    return f'<div class="fill-style-picker">{"".join(options)}</div>'
 
 
 UPLOAD_FORM = f"""
@@ -80,6 +165,41 @@ UPLOAD_FORM = f"""
     <select name="fabric">
       {"".join(f'<option value="{name}">{name}</option>' for name in sorted(PRESETS))}
     </select>
+
+    <label>Fill style (for filled regions)</label>
+    <p style="font-size:0.85rem;color:#666;margin:0 0 4px;">
+      How filled areas get stitched -- pick one now, or leave the
+      default and adjust individual regions later during review. A
+      customer choosing between finished looks can use these same
+      samples as a reference.
+    </p>
+    {_fill_style_picker_html("fill_style", DEFAULT_FILL_STYLE, "upload")}
+
+    <label>Fill direction</label>
+    <select name="fill_angle">
+      <option value="45">One direction for the whole design &mdash; 45&deg; (recommended)</option>
+      <option value="0">One direction &mdash; 0&deg; (horizontal rows)</option>
+      <option value="90">One direction &mdash; 90&deg; (vertical rows)</option>
+      <option value="135">One direction &mdash; 135&deg;</option>
+      <option value="per-shape">Per shape &mdash; each region picks its own angle</option>
+    </select>
+    <p style="font-size:0.85rem;color:#666;margin-top:4px;">
+      Thread is directional, so fill angle decides how each shape catches
+      the light. One shared direction keeps a word's letters looking like
+      one piece of lettering; "per shape" lets every region follow its own
+      form instead, which suits an illustration more than text.
+    </p>
+
+    <label>Finished size (mm, optional)</label>
+    <div style="display:flex;gap:10px;">
+      <input type="number" name="width_mm" placeholder="width" min="1" step="0.5">
+      <input type="number" name="height_mm" placeholder="height" min="1" step="0.5">
+    </div>
+    <p style="font-size:0.85rem;color:#666;margin-top:4px;">
+      Resize the artwork to this finished size before stitching (leave
+      blank to use the source image's own size). Give just one and the
+      other follows the aspect ratio; give both for an exact fit.
+    </p>
 
     <label>Border width (mm, 0 = disabled)</label>
     <input type="number" name="border" value="0" min="0" max="10" step="0.5">
@@ -110,19 +230,482 @@ def index():
     return _page(UPLOAD_FORM)
 
 
+# Plain (non f-string) JS template -- {{JOB_ID}} is replaced with str.replace,
+# not str.format, so the JS's own { } braces need no escaping.
+STITCH_PLAYER_JS = """
+<script>
+(function () {
+  const jobId = "{{JOB_ID}}";
+  const canvas = document.getElementById('stitchCanvas');
+  const ctx = canvas.getContext('2d');
+  const slider = document.getElementById('stitchSlider');
+  const playBtn = document.getElementById('playBtn');
+  const counter = document.getElementById('stitchCounter');
+  const speedSel = document.getElementById('speedSel');
+
+  let steps = [], colors = ['#000000'], playing = false;
+  let minX = 0, minY = 0, pxPerMm = 4;
+
+  fetch('/outputs/' + jobId + '/design_stitches.json')
+    .then(r => r.json())
+    .then(data => { steps = data.steps; colors = data.colors; setup(); })
+    .catch(() => { counter.textContent = 'player unavailable'; });
+
+  function setup() {
+    let maxX = -Infinity, maxY = -Infinity;
+    minX = Infinity; minY = Infinity;
+    steps.forEach(s => {
+      if (s.x < minX) minX = s.x; if (s.x > maxX) maxX = s.x;
+      if (s.y < minY) minY = s.y; if (s.y > maxY) maxY = s.y;
+    });
+    const margin = 4;
+    minX -= margin; minY -= margin; maxX += margin; maxY += margin;
+    const wMm = Math.max(1, maxX - minX), hMm = Math.max(1, maxY - minY);
+    pxPerMm = Math.min(640 / wMm, 480 / hMm, 16);
+    canvas.width = Math.max(60, wMm * pxPerMm);
+    canvas.height = Math.max(60, hMm * pxPerMm);
+
+    slider.max = Math.max(0, steps.length - 1);
+    slider.value = slider.max;
+    render(parseInt(slider.value, 10));
+  }
+
+  function toPx(x, y) { return [(x - minX) * pxPerMm, (y - minY) * pxPerMm]; }
+
+  function render(idx) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    let colorIdx = 0, prev = null;
+    for (let i = 0; i <= idx && i < steps.length; i++) {
+      const s = steps[i];
+      if (s.t === 'color_change') { colorIdx = (colorIdx + 1) % colors.length; prev = null; continue; }
+      if (s.t === 'trim') {
+        // Mark exactly where the machine's thread trimmer fires -- "where
+        // the scissors go" -- as a small red X, distinct from a plain
+        // jump (which only travels, it doesn't cut).
+        const [tx, ty] = toPx(s.x, s.y);
+        ctx.strokeStyle = '#c23b2e'; ctx.lineWidth = 1.6; ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(tx - 4, ty - 4); ctx.lineTo(tx + 4, ty + 4);
+        ctx.moveTo(tx + 4, ty - 4); ctx.lineTo(tx - 4, ty + 4);
+        ctx.stroke();
+        prev = null;
+        continue;
+      }
+      if (s.t === 'end') { prev = null; continue; }
+      const [px, py] = toPx(s.x, s.y);
+      if (prev) {
+        ctx.beginPath();
+        ctx.moveTo(prev[0], prev[1]);
+        ctx.lineTo(px, py);
+        if (s.t === 'jump') {
+          ctx.strokeStyle = '#bbbbbb'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+        } else {
+          ctx.strokeStyle = colors[colorIdx] || '#000000'; ctx.setLineDash([]); ctx.lineWidth = 1.6;
+        }
+        ctx.stroke();
+      }
+      prev = [px, py];
+    }
+    counter.textContent = (idx + 1) + ' / ' + steps.length;
+  }
+
+  slider.addEventListener('input', () => {
+    playing = false; playBtn.textContent = '▶ Play';
+    render(parseInt(slider.value, 10));
+  });
+
+  function tick() {
+    if (!playing) return;
+    const speed = parseInt(speedSel.value, 10);
+    let idx = parseInt(slider.value, 10) + speed;
+    if (idx >= steps.length - 1) { idx = steps.length - 1; playing = false; playBtn.textContent = '▶ Play'; }
+    slider.value = idx;
+    render(idx);
+    if (playing) setTimeout(tick, 16);
+  }
+
+  playBtn.addEventListener('click', () => {
+    if (parseInt(slider.value, 10) >= steps.length - 1) slider.value = 0;
+    playing = !playing;
+    playBtn.textContent = playing ? '⏸ Pause' : '▶ Play';
+    if (playing) tick();
+  });
+})();
+</script>
+"""
+
+
+def _stitch_player_html(job_id: str) -> str:
+    js = STITCH_PLAYER_JS.replace("{{JOB_ID}}", job_id)
+    return f"""
+<div style="margin-top:20px;">
+  <label style="margin-bottom:6px;">Stitch Player -- scrub or play back the actual sew order</label>
+  <canvas id="stitchCanvas" width="640" height="480"></canvas>
+  <div class="player-controls">
+    <button type="button" id="playBtn">&#9654; Play</button>
+    <input type="range" id="stitchSlider" min="0" max="0" value="0">
+    <span id="stitchCounter">0 / 0</span>
+    <select id="speedSel">
+      <option value="1">1x</option>
+      <option value="5" selected>5x</option>
+      <option value="20">20x</option>
+      <option value="60">60x</option>
+    </select>
+  </div>
+  <div class="legend">
+    <span><span class="swatch" style="background:#333;"></span>stitch</span>
+    <span><span class="swatch" style="background:#bbb;border-top:1px dashed #999;"></span>jump/travel</span>
+    <span><span style="color:#c23b2e;font-weight:700;">&times;</span>trim (scissor cut)</span>
+  </div>
+</div>
+{js}"""
+
+
+def _feature_issues_html(result: dict, job_id: str) -> str:
+    """The small-feature report (src/validate/features.py): every
+    region that cannot render at this size, with its numeric remedies.
+    Nothing is applied from here -- dropping a region is a choice made
+    per region on the review page."""
+    issues = result.get("feature_issues") or []
+    if not issues:
+        return ""
+    items = "".join(f"<li>{i['message']}</li>" for i in issues)
+    return f"""
+<div class="card error" style="margin-top:12px;">
+  <p><b>{len(issues)} feature(s) cannot render at this size.</b> The file was still
+  written; these are what a machine can't reproduce and what would fix each one.
+  Nothing has been simplified for you -- to drop a feature, mark it on the
+  <a href="/review/{job_id}">review page</a>.</p>
+  <ul style="margin:8px 0 0 18px;">{items}</ul>
+</div>"""
+
+
+def _sewability_html(result: dict) -> str:
+    """One line of what the sewability audit measured, and its
+    rejection list if any (src/validate/audit.py)."""
+    a = result.get("audit")
+    if not a:
+        return ""
+    problems = "".join(f"<li>{p}</li>" for p in a["problems"])
+    problems_html = (f'<ul style="margin:6px 0 0 18px;">{problems}</ul>' if problems
+                     else '<p style="margin:6px 0 0;color:#2e7d32;">No sewability problems found.</p>')
+    return f"""
+<details class="region-details" style="margin-top:12px;">
+  <summary>Sewability audit: {a['trim_count']} trims, {a['jump_count']} jumps
+  ({a['total_jump_mm']:.0f}mm, longest {a['longest_jump_mm']:.0f}mm),
+  {a['stitches_below_min']} stitches under the machine minimum,
+  {a['stitches_above_max']} over the maximum, {a['thread_length_mm'] / 1000:.1f}m of thread</summary>
+  {problems_html}
+</details>"""
+
+
+def _analysis_summary_html(result: dict) -> str:
+    """Read-only view of the Multi-Region Illustration Digitization
+    milestone's analysis summary (item 11) -- the counts panel plus a
+    per-region table with each classification's reason, confidence, and
+    matched thread. Interactive per-region correction (changing stitch
+    type/density/angle/etc. and re-rendering just that region) is the
+    next step on top of this, not yet built -- this is the read-only
+    "see the decisions" half of that flow.
+    """
+    summary_bar = _analysis_summary_html_bar_only(result)
+
+    def row(r: dict) -> str:
+        cls = "needs-review" if r["needs_review"] else ""
+        delta_note = (f" (Δ{r['thread_delta_e']:.1f})" if r["thread_delta_e"] > 0.5 else "")
+        texture = "yes" if r["texture_zone"] else "&ndash;"
+        chip = ('<span class="chip" style="background:#777;">dropped</span>' if r.get("dropped")
+                else f'<span class="chip {r["stitch_type"]}">{r["stitch_type"]}</span>')
+        if r.get("feature_issue"):
+            chip += ' <span title="cannot render at this size -- see the small-feature report">⚠️ size</span>'
+        return f"""<tr class="{cls}">
+  <td>{r['id']}</td>
+  <td>{chip}</td>
+  <td><span class="thread-dot" style="background:{r['thread_rgb_hex']};"></span>{r['thread_name']}{delta_note}</td>
+  <td>{r['confidence']:.2f}</td>
+  <td>{texture}</td>
+  <td style="color:#666;">{r['reason']}</td>
+</tr>"""
+
+    rows = "".join(row(r) for r in result["regions"])
+    table = f"""
+<details class="region-details" open>
+  <summary>Per-region analysis ({len(result['regions'])} regions)</summary>
+  <div style="overflow-x:auto;">
+    <table class="regions">
+      <tr><th>Region</th><th>Stitch type</th><th>Thread</th><th>Confidence</th><th>Texture</th><th>Why</th></tr>
+      {rows}
+    </table>
+  </div>
+</details>"""
+    return summary_bar + table
+
+
+def _region_overlays_html(result: dict) -> str:
+    """One clickable overlay box per region, positioned over the preview
+    image by percentage (src/pipeline.py's bbox_pct, computed against
+    the same bounds+margin the preview PNG is rendered at) so it lines
+    up regardless of how the browser scales the image."""
+    boxes = []
+    for r in result["regions"]:
+        b = r["bbox_pct"]
+        cls = "region-overlay"
+        if r["needs_review"]:
+            cls += " needs-review"
+        if r["corrected"]:
+            cls += " corrected"
+        boxes.append(
+            f'<a class="{cls}" href="#form-{r["id"]}" '
+            f'style="left:{b["left"]}%;top:{b["top"]}%;width:{max(b["width"], 1.5)}%;'
+            f'height:{max(b["height"], 1.5)}%;" '
+            f'title="{r["id"]} ({r["stitch_type"]}) -- click to edit"></a>')
+    return "".join(boxes)
+
+
+_STITCH_TYPES = ["running", "satin", "fill"]
+
+
+def _region_form_html(region_meta: dict, existing: dict) -> str:
+    rid = region_meta["id"]
+
+    def opt(value, label, current):
+        sel = " selected" if current == value else ""
+        return f'<option value="{value}"{sel}>{label}</option>'
+
+    stitch_options = opt("", f"unchanged ({region_meta['stitch_type']})", existing.get("stitch_type") or "")
+    stitch_options += "".join(
+        opt(t, t, existing.get("stitch_type") or "") for t in _STITCH_TYPES)
+
+    underlay_val = existing.get("underlay")
+    underlay_str = "" if underlay_val is None else ("on" if underlay_val else "off")
+    underlay_options = "".join(
+        opt(v, label, underlay_str) for v, label in
+        [("", "unchanged"), ("on", "on"), ("off", "off")])
+
+    trim_val = existing.get("force_trim")
+    trim_str = "" if trim_val is None else ("on" if trim_val else "off")
+    force_trim_options = "".join(
+        opt(v, label, trim_str) for v, label in
+        [("", "unchanged (automatic)"), ("on", "force a cut here"), ("off", "never cut here")])
+
+    drop_val = existing.get("drop")
+    drop_str = "" if drop_val is None else ("on" if drop_val else "off")
+    drop_options = "".join(
+        opt(v, label, drop_str) for v, label in
+        [("", "keep (stitch it)"), ("on", "drop -- merge into what surrounds it"), ("off", "keep")])
+    issue_html = (f'<p class="warn" style="margin:0 0 8px;">⚠️ {region_meta["feature_issue"]}</p>'
+                  if region_meta.get("feature_issue") else "")
+
+    def numval(key):
+        v = existing.get(key)
+        return "" if v is None else v
+
+    thread_rgb = existing.get("thread_rgb")
+    thread_hex = "".join("%02x" % c for c in thread_rgb) if thread_rgb else ""
+
+    fill_style_val = existing.get("fill_style") or ""
+    fill_style_options = opt("", f"unchanged ({region_meta['fill_style']})", fill_style_val)
+    fill_style_options += "".join(opt(s, FILL_STYLE_LABELS[s], fill_style_val) for s in FILL_STYLES)
+    fill_preview_id = f"fillpreview-{rid}"
+    fill_preview_src = f"/static/fill_previews/{fill_style_val or region_meta['fill_style']}.png"
+
+    open_attr = " open" if (region_meta["corrected"] or region_meta["needs_review"]) else ""
+    corrected_chip = ('<span class="chip" style="background:#eee;color:#555;">corrected</span>'
+                       if region_meta["corrected"] else "")
+    return f"""
+<details class="region-form" id="form-{rid}"{open_attr}>
+  <summary>{rid} <span class="chip {region_meta['stitch_type']}">{region_meta['stitch_type']}</span>
+    {'<span class="chip" style="background:#777;">dropped</span>' if region_meta.get('dropped') else ''}
+    {corrected_chip}
+  </summary>
+  <p style="font-size:0.82rem;color:#666;margin:6px 0 0;">{region_meta['reason']}</p>
+  {issue_html}
+  <div class="correction-grid">
+    <label>Stitch type
+      <select name="{rid}::stitch_type">{stitch_options}</select>
+    </label>
+    <label>Angle (deg)
+      <input type="number" step="any" name="{rid}::angle_deg" value="{numval('angle_deg')}" placeholder="unchanged">
+    </label>
+    <label>Density / row spacing (mm)
+      <input type="number" step="any" min="0.05" name="{rid}::density_mm" value="{numval('density_mm')}" placeholder="unchanged">
+    </label>
+    <label>Fill style (if this region is fill)
+      <select name="{rid}::fill_style"
+              onchange="document.getElementById('{fill_preview_id}').src='/static/fill_previews/' + (this.value || '{region_meta['fill_style']}') + '.png'">
+        {fill_style_options}
+      </select>
+      <div class="fill-style-mini">
+        <img id="{fill_preview_id}" src="{fill_preview_src}" alt="fill style sample">
+      </div>
+    </label>
+    <label>Underlay
+      <select name="{rid}::underlay">{underlay_options}</select>
+    </label>
+    <label>Trim (scissor cut) before this region
+      <select name="{rid}::force_trim">{force_trim_options}</select>
+    </label>
+    <label>Drop this region
+      <select name="{rid}::drop">{drop_options}</select>
+    </label>
+    <label>Border width (mm)
+      <input type="number" step="any" min="0" name="{rid}::border_width_mm" value="{numval('border_width_mm')}" placeholder="unchanged">
+    </label>
+    <label>Layer order (z)
+      <input type="number" step="1" name="{rid}::z_order" value="{numval('z_order')}" placeholder="{region_meta['z_order']}">
+    </label>
+    <label>Thread color override (hex)
+      <input type="text" name="{rid}::thread_rgb" value="{thread_hex}"
+             placeholder="{region_meta['thread_rgb_hex'].lstrip('#')}" pattern="[0-9a-fA-F]{{6}}" maxlength="6">
+    </label>
+  </div>
+</details>"""
+
+
+def _review_page_html(job_id: str, spec: JobSpec, result: dict,
+                       error: str | None = None, notice: str | None = None) -> str:
+    banner = ""
+    if error:
+        banner = f'<div class="card error"><p><b>Correction rejected:</b> {error}</p></div>'
+    elif notice:
+        banner = f'<div class="notice">{notice}</div>'
+
+    rows = []
+    for r in result["regions"]:
+        cls = "region-row needs-review" if r["needs_review"] else "region-row"
+        chip = ('<span class="chip" style="background:#777;">dropped</span>' if r.get("dropped")
+                else f'<span class="chip {r["stitch_type"]}">{r["stitch_type"]}</span>')
+        if r.get("feature_issue"):
+            chip += ' <span title="cannot render at this size -- see the small-feature report">⚠️ size</span>'
+        rows.append(f"""<tr class="{cls}" onclick="location.hash='form-{r['id']}'">
+  <td>{r['id']}</td>
+  <td>{chip}</td>
+  <td><span class="thread-dot" style="background:{r['thread_rgb_hex']};"></span>{r['thread_name']}</td>
+  <td>{r['confidence']:.2f}</td>
+  <td>{'yes' if r['corrected'] else '&ndash;'}</td>
+</tr>""")
+
+    forms = "".join(
+        _region_form_html(r, spec.corrections.get(r["id"], {})) for r in result["regions"])
+
+    return f"""
+{banner}
+<div class="card">
+  <p class="stat"><b>{result['stitch_count']}</b>stitches</p>
+  <p class="stat"><b>{result['trim_count']}</b>trims (scissor cuts)</p>
+  <p class="stat"><b>{result['runtime_formatted']}</b>est. run time</p>
+  <p class="stat"><b>{spec.fabric}</b>fabric</p>
+  <p class="stat"><b>{FILL_STYLE_LABELS[spec.default_fill_style]}</b>default fill style</p>
+  <p class="stat"><b>{'per shape' if spec.default_fill_angle_deg is None else f'{spec.default_fill_angle_deg:g}&deg;'}</b>fill direction</p>
+  {_analysis_summary_html_bar_only(result)}
+  {_feature_issues_html(result, job_id)}
+
+  <div class="preview-frame">
+    <img class="preview" src="/outputs/{job_id}/design_preview.png?v={len(spec.corrections)}" alt="Stitch preview">
+    {_region_overlays_html(result)}
+  </div>
+
+  <div style="overflow-x:auto;">
+    <table class="regions">
+      <tr><th>Region</th><th>Stitch type</th><th>Thread</th><th>Confidence</th><th>Corrected</th></tr>
+      {''.join(rows)}
+    </table>
+  </div>
+
+  <form action="/review/{job_id}/correct" method="post">
+    <h3 style="margin-bottom:0;">Per-region corrections</h3>
+    <p style="font-size:0.85rem;color:#666;">Leave a field blank to keep the automatic decision.
+    Click a region above (on the image or in the table) to jump to its form.</p>
+    {forms}
+    <button type="submit">Apply corrections</button>
+  </form>
+
+  <div style="margin-top:20px;">
+    <a class="download" href="/outputs/{job_id}/design.dst" download>Download .DST</a>
+    <a class="download" href="/outputs/{job_id}/design.pes" download>Download .PES</a>
+  </div>
+  {_stitch_player_html(job_id)}
+</div>
+<p class="back"><a href="/">&larr; digitize another image</a></p>
+"""
+
+
+def _analysis_summary_html_bar_only(result: dict) -> str:
+    """Just the counts bar from _analysis_summary_html, without the
+    read-only per-region table (the review page has its own clickable
+    table with a "corrected" column instead)."""
+    s = result["summary"]
+    review_class = "review" if s["warnings_requiring_review"] else ""
+    return f"""
+<div class="summary-bar">
+  <span><b>{s['visual_colors_detected']}</b> visual colors detected</span>
+  <span><b>{s['thread_colors_selected']}</b> thread colors selected</span>
+  <span><b>{s['filled_regions']}</b> filled regions</span>
+  <span><b>{s['satin_columns']}</b> satin columns</span>
+  <span><b>{s['running_stitch_details']}</b> running-stitch details</span>
+  <span><b>{s['texture_zones']}</b> texture zones</span>
+  <span class="{review_class}"><b>{s['warnings_requiring_review']}</b> warning(s) requiring review</span>
+</div>"""
+
+
+def _parse_fill_angle(raw: str | None) -> float | None:
+    """The upload form's fill-direction select: a number of degrees, or
+    "per-shape" to let every region keep its own medial-axis angle.
+    Anything unrecognized falls back to the recommended shared angle
+    rather than erroring -- this is a dropdown, not free text, so a bad
+    value means a tampered/stale form, not a user mistake worth a page."""
+    if raw is None:
+        return UNIFORM_FILL_ANGLE_DEG
+    if raw.strip().lower() in ("per-shape", "per_shape", "auto", "none"):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return UNIFORM_FILL_ANGLE_DEG
+
+
+def _parse_optional_float(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        parsed = float(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
-                     force: bool) -> tuple[str, int]:
+                     force: bool, width_mm: float | None = None,
+                     height_mm: float | None = None,
+                     fill_style: str = DEFAULT_FILL_STYLE,
+                     fill_angle_deg: float | None = UNIFORM_FILL_ANGLE_DEG
+                     ) -> tuple[str, int]:
     job_dir = os.path.dirname(input_path)
     out_stem = os.path.join(job_dir, "design")
 
     try:
         result = digitize_image(input_path, fabric, out_stem,
-                                 border_width_mm=border, force=force)
+                                 border_width_mm=border, force=force,
+                                 target_width_mm=width_mm, target_height_mm=height_mm,
+                                 fill_style=fill_style, fill_angle_deg=fill_angle_deg)
+        # Persist enough of this request to redo it later with manual
+        # corrections applied (src/review/rebuild.py) -- only saved on
+        # success, so a rejected job has nothing to review until it's
+        # been force-digitized into an actual result.
+        save_job_spec(job_dir, JobSpec(
+            input_path=input_path, fabric=fabric, border_width_mm=border,
+            force=force, width_mm=width_mm, height_mm=height_mm,
+            default_fill_style=fill_style, default_fill_angle_deg=fill_angle_deg))
     except DigitizeScopeError as e:
         retry = "" if force else f"""
 <form action="/force/{job_id}" method="post" style="margin-top:12px;">
   <input type="hidden" name="fabric" value="{fabric}">
   <input type="hidden" name="border" value="{border}">
+  <input type="hidden" name="width_mm" value="{width_mm or ''}">
+  <input type="hidden" name="height_mm" value="{height_mm or ''}">
+  <input type="hidden" name="fill_style" value="{fill_style}">
+  <input type="hidden" name="fill_angle" value="{'per-shape' if fill_angle_deg is None else fill_angle_deg}">
   <button type="submit" style="background:#a94442;">Force digitize anyway</button>
 </form>"""
         return _page(f'<div class="card error"><p><b>Rejected:</b> {e}</p>'
@@ -138,9 +721,16 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
     return _page(f"""
 <div class="card">
   <p class="stat"><b>{result['stitch_count']}</b>stitches</p>
+  <p class="stat"><b>{result['trim_count']}</b>trims (scissor cuts)</p>
   <p class="stat"><b>{result['runtime_formatted']}</b>est. run time</p>
   <p class="stat"><b>{fabric}</b>fabric</p>
+  <p class="stat"><b>{FILL_STYLE_LABELS[fill_style]}</b>fill style</p>
+  <p class="stat"><b>{'per shape' if fill_angle_deg is None else f'{fill_angle_deg:g}&deg;'}</b>fill direction</p>
   {warnings_html}
+  {_feature_issues_html(result, job_id)}
+  {_sewability_html(result)}
+  {_analysis_summary_html(result)}
+  <a class="review-link" href="/review/{job_id}">Review &amp; correct regions &rarr;</a>
   <div style="margin-top:16px;">
     <img class="preview" src="/outputs/{job_id}/design_preview.png" alt="Stitch preview">
   </div>
@@ -148,6 +738,7 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
     <a class="download" href="/outputs/{job_id}/design.dst" download>Download .DST</a>
     <a class="download" href="/outputs/{job_id}/design.pes" download>Download .PES</a>
   </div>
+  {_stitch_player_html(job_id)}
 </div>
 <p class="back"><a href="/">&larr; digitize another image</a></p>
 """), 200
@@ -175,6 +766,12 @@ def digitize():
     except ValueError:
         border = 0.0
     force = request.form.get("force") == "1"
+    width_mm = _parse_optional_float(request.form.get("width_mm"))
+    height_mm = _parse_optional_float(request.form.get("height_mm"))
+    fill_style = request.form.get("fill_style", DEFAULT_FILL_STYLE)
+    if fill_style not in FILL_STYLES:
+        fill_style = DEFAULT_FILL_STYLE
+    fill_angle_deg = _parse_fill_angle(request.form.get("fill_angle"))
 
     job_id = uuid.uuid4().hex[:12]
     job_dir = os.path.join(RESULTS_DIR, job_id)
@@ -183,7 +780,8 @@ def digitize():
     input_path = os.path.join(job_dir, f"input{ext}")
     file.save(input_path)
 
-    return _run_and_render(job_id, input_path, fabric, border, force)
+    return _run_and_render(job_id, input_path, fabric, border, force, width_mm, height_mm,
+                            fill_style, fill_angle_deg)
 
 
 @app.route("/force/<job_id>", methods=["POST"])
@@ -205,8 +803,77 @@ def force_digitize(job_id):
         border = float(request.form.get("border", "0") or 0)
     except ValueError:
         border = 0.0
+    width_mm = _parse_optional_float(request.form.get("width_mm"))
+    height_mm = _parse_optional_float(request.form.get("height_mm"))
+    fill_style = request.form.get("fill_style", DEFAULT_FILL_STYLE)
+    if fill_style not in FILL_STYLES:
+        fill_style = DEFAULT_FILL_STYLE
+    fill_angle_deg = _parse_fill_angle(request.form.get("fill_angle"))
 
-    return _run_and_render(job_id, input_path, fabric, border, force=True)
+    return _run_and_render(job_id, input_path, fabric, border, force=True,
+                            width_mm=width_mm, height_mm=height_mm, fill_style=fill_style,
+                            fill_angle_deg=fill_angle_deg)
+
+
+@app.route("/review/<job_id>")
+def review(job_id):
+    """Manual-review page: clickable region overlays over the preview,
+    a per-region analysis table, and an editable form per region
+    (src/review/corrections.py) for stitch type, angle, density,
+    underlay, border width, layer order, and thread color. Rebuilds on
+    every load rather than reading cached files, so it always reflects
+    the job's current corrections (see src/jobs.py's determinism note)."""
+    job_id = secure_filename(job_id)
+    job_dir = os.path.join(RESULTS_DIR, job_id)
+    if not os.path.isdir(job_dir) or not has_job_spec(job_dir):
+        abort(404)
+
+    spec = load_job_spec(job_dir)
+    out_stem = os.path.join(job_dir, "design")
+    try:
+        result = rebuild_job(spec, out_stem)
+    except Exception as e:  # noqa: BLE001 -- surface pipeline errors, not a 500 page
+        return _page(f'<div class="card error"><p><b>Error:</b> {e}</p>'
+                      f'<p class="back"><a href="/">&larr; back</a></p></div>'), 500
+
+    return _page(_review_page_html(job_id, spec, result))
+
+
+@app.route("/review/<job_id>/correct", methods=["POST"])
+def review_correct(job_id):
+    """Validates every submitted region correction *before* applying
+    any of them, merges the valid ones into the job's persisted spec
+    (a blank field reverts that region to its automatic decision), and
+    rebuilds -- re-exporting DST/PES, the preview, and the stitch-player
+    command stream, with every uncorrected region's decision unchanged."""
+    job_id = secure_filename(job_id)
+    job_dir = os.path.join(RESULTS_DIR, job_id)
+    if not os.path.isdir(job_dir) or not has_job_spec(job_dir):
+        abort(404)
+
+    spec = load_job_spec(job_dir)
+    out_stem = os.path.join(job_dir, "design")
+    current = rebuild_job(spec, out_stem)
+    region_ids = {r["id"] for r in current["regions"]}
+
+    try:
+        overrides = parse_correction_form(request.form.to_dict(), region_ids)
+    except CorrectionValidationError as e:
+        return _page(_review_page_html(job_id, spec, current, error=str(e))), 400
+
+    applied = []
+    for region_id, override in overrides.items():
+        if override.is_noop():
+            spec.corrections.pop(region_id, None)
+        else:
+            spec.corrections[region_id] = override.__dict__
+            applied.append(region_id)
+
+    save_job_spec(job_dir, spec)
+    result = rebuild_job(spec, out_stem)
+    notice = (f"Applied correction(s) to {len(applied)} region(s)." if applied
+              else "No changes submitted -- every field was left blank.")
+    return _page(_review_page_html(job_id, spec, result, notice=notice))
 
 
 @app.route("/outputs/<job_id>/<path:filename>")

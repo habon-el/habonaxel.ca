@@ -13,6 +13,19 @@ from dataclasses import dataclass, field
 
 Point = tuple[float, float]
 
+# Machine limits -- the same on every fabric preset, unlike everything
+# in src/params/presets.py. Below MIN a stitch doesn't move the needle
+# clear of its own previous penetration: the thread piles up in one
+# hole and breaks (0.3mm is the industry-standard "short stitch"
+# floor, and also the deliberate size of the tie stitches in
+# src/io_/export.py). Above MAX a single stitch lies loose enough to
+# snag in wear; a digitizer splits satin wider than this. DST's own
+# hard limit is 12.1mm and pyembroidery breaks anything longer into
+# pieces on write, so a stitch past MAX is either a split-satin case
+# or a straight stitch across something it shouldn't cross.
+MIN_STITCH_LENGTH_MM = 0.3
+MAX_STITCH_LENGTH_MM = 7.0
+
 # Stitch block kinds
 RUNNING = "running"
 SATIN = "satin"
@@ -24,6 +37,48 @@ UNDERLAY_SATIN = "underlay_satin"
 # without switching fabric or thread (see src/stitches/border.py).
 BORDER = "border"
 
+# Fill *styles* -- how a FILL-type region's interior is actually covered,
+# independent of the stitch-type decision above. A human (or a customer,
+# via the same dropdown) picks one of these instead of the system always
+# defaulting to one look; see src/stitches/fill.py for what each one
+# actually stitches and testbench/generate_fill_previews.py for the real
+# rendered swatch shown next to each choice in the web UI.
+FILL_TATAMI = "tatami"
+FILL_CONTOUR = "contour"
+FILL_CROSSHATCH = "crosshatch"
+FILL_BRICK = "brick"
+FILL_STYLES = (FILL_TATAMI, FILL_CONTOUR, FILL_CROSSHATCH, FILL_BRICK)
+DEFAULT_FILL_STYLE = FILL_TATAMI
+
+# One shared fill *direction* for every filled region in a design,
+# rather than each region deriving its own angle from its own medial
+# axis (src/regions/medial.py's angle_deg).
+#
+# Per-shape angles are mathematically reasonable and visually wrong: in
+# a real "Hello world!" run, H and w came out stitched horizontally,
+# e/o/o vertically, r at -69 degrees and d at -44 -- five directions in
+# a single word. Embroidery thread is directional, so each of those
+# reflects light differently and the word reads as a set of mismatched
+# letters rather than one piece of lettering. Real digitizers give a
+# word (or any text block) one angle for exactly that reason -- it's
+# what "set stitch angle lines to control light reflection" means.
+#
+# 45 degrees is the standard default: unlike 0/90 it doesn't line up
+# with the fabric's own weave (where fill rows can sink between the
+# threads), and it reads evenly under light from any direction.
+#
+# None restores per-shape angles, which is still the right choice for
+# an illustration whose shapes genuinely should flow in their own
+# directions (a mascot's limbs, a swoosh) rather than text.
+UNIFORM_FILL_ANGLE_DEG = 45.0
+
+FILL_STYLE_LABELS = {
+    FILL_TATAMI: "Tatami (standard rows)",
+    FILL_CONTOUR: "Contour (follows the shape's edge)",
+    FILL_CROSSHATCH: "Cross-Hatch (two-direction)",
+    FILL_BRICK: "Brick (staggered rows)",
+}
+
 
 @dataclass
 class StitchBlock:
@@ -33,6 +88,23 @@ class StitchBlock:
     # Region/element id this block belongs to, so pathing can keep blocks
     # from the same region adjacent and a human can re-sequence by element.
     element_id: str = ""
+    # Overrides the machine's automatic thread trimmer for the travel
+    # immediately before this block: None (default) leaves the
+    # automatic distance rule in charge (src/pathing/route.py); True
+    # forces a cut even if the gap is short; False suppresses a cut
+    # even if the gap is long enough that the automatic rule would
+    # normally call for one (the machine still jumps there -- it just
+    # doesn't cut the thread first, leaving a float). Set by a manual
+    # region correction (src/review/corrections.py's force_trim).
+    force_trim_before: bool | None = None
+    # Set when this block is one link of a fixed chain within its
+    # element -- a branching satin network sewn as one continuous
+    # pass (src/stitches/satin_network.py): travel down each branch,
+    # satin back over it. Pathing (src/pathing/order.py) sews a
+    # chain's blocks in this order, unchanged and un-reversed, since
+    # every block starts exactly where the previous one ended. None
+    # (the default) leaves the block free to be re-sequenced.
+    sequence: int | None = None
 
     def is_empty(self) -> bool:
         return len(self.points_mm) < 2
@@ -42,6 +114,15 @@ class StitchBlock:
 class ThreadColor:
     name: str
     rgb: tuple[int, int, int] = (0, 0, 0)
+    # Nearest real manufacturer thread (src/params/thread_palette.py),
+    # filled in by the pipeline once the source color is known. rgb above
+    # stays the exact source/design color (used for preview and export)
+    # regardless of the match -- these fields are the *recommendation*,
+    # surfaced separately so a large delta_e reads as "approximate," not
+    # silently swapped in.
+    matched_thread_name: str = ""
+    matched_thread_code: str = ""
+    thread_delta_e: float = 0.0
 
 
 @dataclass
