@@ -105,6 +105,19 @@ STROKE_AREA_RATIO_RANGE = (0.55, 1.7)
 # measure 85% for that reason alone.
 STROKE_MIN_STITCHABLE_COVERAGE = 0.75
 
+# A "network" whose strokes are mostly stubs -- each barely longer than
+# it is wide -- is a brush or scanned shape whose ragged edge grew a
+# skeleton twig per bump, not an outline network. Satin then sews one
+# short column per twig, fanned out in every direction (a "starburst").
+# Brush lettering measured 4-85 such strokes with a median of 1.4-2.6x
+# and a confidence of 0.01-0.48; clean letters measured 4-5 strokes at
+# 2.0-2.8x but a confidence of 0.59-0.92. Confidence is what separates
+# them -- an "E" has short arms too -- so all three must agree before a
+# network is filled instead.
+BRANCHY_NETWORK_MIN_BRANCHES = 4
+BRANCHY_NETWORK_MAX_MEDIAN_ASPECT = 3.0
+BRANCHY_NETWORK_MAX_CONFIDENCE = 0.5
+
 DEFAULT_FILL_ANGLE_DEG = 45.0
 # Below this skeleton length the medial axis is too short/noisy to trust
 # for an angle (e.g. a near-circular blob) -- fall back to the default.
@@ -235,6 +248,20 @@ def classify_region(region: Region, fabric: FabricPreset) -> Classification:
             (stroke_aspect - STROKE_MIN_ASPECT) / STROKE_MIN_ASPECT,
             (STROKE_MAX_WIDTH_VARIATION - medial.width_variation) / STROKE_MAX_WIDTH_VARIATION))
         n_branches = len(medial.branches)
+        if (len(aspects) >= BRANCHY_NETWORK_MIN_BRANCHES
+                and branch_aspect < BRANCHY_NETWORK_MAX_MEDIAN_ASPECT
+                and confidence < BRANCHY_NETWORK_MAX_CONFIDENCE):
+            # Straight to fill: the bounding-rectangle satin test below
+            # would sew one straight column over a ragged brush shape.
+            # 0.55 = the same "worth a second look" as a near-satin fill.
+            return Classification(
+                FILL, medial, _fill_angle(medial), avg_width_mm=avg_width,
+                confidence=0.55,
+                reason=f"looks like a network of {len(aspects)} strokes, but "
+                       f"the typical one is only {branch_aspect:.1f}x longer "
+                       f"than wide -- ragged-edge twigs, not real strokes. "
+                       f"Satin would fan short columns in every direction, "
+                       f"so it is filled instead; switch to satin if wanted.")
         shape = ("closed outline ring" if medial.is_closed_loop
                  else f"outline network of {n_branches} strokes" if n_branches > 1
                  else "curved stroke")

@@ -187,3 +187,29 @@ def test_stubby_branching_shapes_still_fill():
                     (16, 24), (8, 24), (8, 16), (0, 16), (0, 8), (8, 8)])
     c = classify_region(Region(polygon=plus, color_index=0, region_id="plus"), fabric)
     assert c.stitch_type == FILL
+
+
+def _curved_stroke(holes: int):
+    """A 2mm brush stroke along a gentle arc, with pinholes in it --
+    what a dry-brush or textured letter rasterizes to."""
+    import math
+    from shapely.geometry import LineString
+    line = LineString([(x * 15 / 40, 2 * math.sin(x / 40 * math.pi)) for x in range(41)])
+    poly = line.buffer(1.0)
+    for k in range(holes):
+        p = line.interpolate((k + 0.5) * line.length / holes)
+        poly = poly.difference(Point(p.x, p.y + (0.3 if k % 2 else -0.3)).buffer(0.2))
+    return Region(polygon=poly, color_index=0, region_id="brush")
+
+
+def test_pinholed_brush_stroke_is_filled_not_starburst_satin():
+    """Every pinhole grows its own short skeleton twig, and satin sewed
+    a stub column per twig, fanned out in every direction. The same
+    stroke without the holes is still satin."""
+    fabric = get_preset("twill")
+    clean = classify_region(_curved_stroke(holes=0), fabric)
+    assert clean.stitch_type == SATIN
+    brush = classify_region(_curved_stroke(holes=6), fabric)
+    assert brush.stitch_type == FILL
+    assert "ragged-edge twigs" in brush.reason
+    assert brush.confidence < 0.6  # flagged for a second look, not silent
