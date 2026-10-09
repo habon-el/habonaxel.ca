@@ -30,7 +30,7 @@ from shapely import affinity
 from shapely.geometry import LineString, Polygon
 from shapely.ops import unary_union
 
-from .model import MIN_STITCH_LENGTH_MM, Point
+from .model import MAX_STITCH_LENGTH_MM, MIN_STITCH_LENGTH_MM, Point
 from .running import resample_path
 
 # How far a segment-to-segment connector may stray outside the shape
@@ -48,6 +48,12 @@ CONNECTOR_OUTSIDE_TOLERANCE_MM = 0.3
 # crossing (a star's notch, a ring's hole) is orders of magnitude
 # wider than this.
 CONTAINMENT_EPSILON_MM = 0.05
+
+# Longest single stitch an inside connector may make. Under the machine
+# maximum by the most the file's 1/10mm grid can lengthen a diagonal
+# stitch (~0.14mm), so a connector split at exactly this can't come
+# out of the export over the limit.
+CONNECTOR_MAX_STEP_MM = MAX_STITCH_LENGTH_MM - 0.15
 
 
 def _row_segments(polygon: Polygon, y: float, xmin: float, xmax: float
@@ -106,6 +112,15 @@ def _runs_from_segments(segments_rot: list[list[Point]], angle_deg: float, centr
         if outside > CONNECTOR_OUTSIDE_TOLERANCE_MM:
             runs_rot.append(list(seg))
         else:
+            # An inside connector can still be long -- across a big
+            # shape, from one row's last segment to the next row's
+            # first when a hole splits the rows (8.6mm on the cartoon
+            # face at 350mm). Needle points along it keep every stitch
+            # under the machine maximum.
+            a, b = runs_rot[-1][-1], seg[0]
+            n = math.ceil(connector.length / CONNECTOR_MAX_STEP_MM)
+            runs_rot[-1].extend((a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n)
+                                for k in range(1, n))
             runs_rot[-1].extend(seg)
 
     runs: list[list[Point]] = []
