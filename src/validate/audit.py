@@ -14,9 +14,14 @@ What it measures, and why each one matters on a machine:
 
 * Travel: JUMP/TRIM counts, total and longest jump, and thread sewn
   *outside* every region (a stitch across open fabric is a float the
-  customer sees; a jump there is fine). Trims are the slow, unreliable
-  part of a sew-out -- each one is a mechanical cut plus a re-start,
-  and a trimmer misfire is the most common machine stop.
+  customer sees; a jump there is fine as long as it's cut). Trims are
+  the slow, unreliable part of a sew-out -- each one is a mechanical
+  cut plus a re-start, and a trimmer misfire is the most common
+  machine stop.
+* Visible floats: every jump the thread was *not* cut for, measured
+  for how much of it lies on top where it shows rather than buried
+  under later stitching -- the loose strands a customer snips off by
+  hand.
 * Stitch length: anything under the machine minimum jams the needle
   in its own thread (breaks); anything over the practical maximum
   snags and loops. Counted from the exported command stream so tie
@@ -36,6 +41,8 @@ import math
 from dataclasses import asdict, dataclass, field
 
 import pyembroidery as pe
+from shapely import STRtree
+from shapely.geometry import LineString
 from shapely.geometry import Point as ShapelyPoint
 from shapely.ops import unary_union
 from shapely.prepared import prep
@@ -44,6 +51,7 @@ from src.io_.export import stitch_plan_to_pattern
 from src.io_.units import UNITS_PER_MM
 from src.params.classify import Classification
 from src.params.presets import FabricPreset
+from src.pathing.visibility import COVER_RADIUS_MM, MAX_EXPOSED_MM, exposed_mm
 from src.preview.runtime import estimate_runtime_seconds
 from src.regions.model import Region
 from src.regions.scope import MIN_FEATURE_HEIGHT_MM
@@ -96,6 +104,11 @@ class SewabilityAudit:
     longest_jump_mm: float = 0.0
     # Thread actually sewn (not jumped) across open fabric.
     thread_outside_regions_mm: float = 0.0
+    # Uncut jumps whose thread lies on top where it shows (see
+    # visible_floats below), and how much of them shows in total.
+    visible_float_count: int = 0
+    visible_float_mm: float = 0.0
+    longest_visible_float_mm: float = 0.0
     stitch_min_mm: float = 0.0
     stitch_max_mm: float = 0.0
     stitch_mean_mm: float = 0.0
@@ -132,6 +145,11 @@ class SewabilityAudit:
         if self.thread_outside_regions_mm > 1.0:
             out.append(f"{self.thread_outside_regions_mm:.0f}mm of thread sewn "
                        f"across open fabric outside every region.")
+        if self.visible_float_count:
+            out.append(f"{self.visible_float_count} uncut travel strand(s) left "
+                       f"lying on top ({self.visible_float_mm:.0f}mm showing, "
+                       f"longest {self.longest_visible_float_mm:.1f}mm) -- "
+                       f"snipped off by hand after sewing, or they snag.")
         for r in self.over_dense_regions:
             out.append(f"Region {r.region_id} ({r.stitch_type}) is over-dense: "
                        f"{r.density_mm_per_mm2:.1f} mm/mm^2 against a "
@@ -150,6 +168,47 @@ class SewabilityAudit:
         d = asdict(self)
         d["problems"] = self.problems()
         return d
+
+
+def visible_floats(pattern: pe.EmbPattern) -> list[float]:
+    """mm showing of each uncut float in a finished pattern: thread the
+    machine carried from one needle penetration to the next across a
+    jump with no TRIM or color change in between. Only what stitching
+    sewn *later* lies over counts as buried (src/pathing/visibility.py).
+
+    Works on the command stream alone -- no plan, no stitch types -- so
+    it scores any DST, including one this pipeline didn't write. The
+    price is that any later stitch counts as cover, a running line
+    included, so it can under-count a little; it never over-counts."""
+    segments: list = []      # buffered later-stitch cover, in sew order
+    floats: list = []        # (start, end, number of segments before it)
+    needle = None
+    jumped = cut = False
+    for x, y, cmd in pattern.stitches:
+        kind = cmd & pe.COMMAND_MASK
+        pos = (x / UNITS_PER_MM, y / UNITS_PER_MM)
+        if kind == pe.STITCH:
+            if needle is not None and jumped and not cut:
+                floats.append((needle, pos, len(segments)))
+            elif needle is not None and not jumped and _dist(needle, pos) > 0:
+                segments.append(LineString([needle, pos]).buffer(COVER_RADIUS_MM))
+            needle = pos
+            jumped = cut = False
+        elif kind == pe.JUMP:
+            jumped = True
+        elif kind in (pe.TRIM, pe.COLOR_CHANGE):
+            cut = True
+    tree = STRtree(segments) if segments else None
+    out = []
+    for a, b, first_later in floats:
+        later = []
+        if tree is not None:
+            later = [segments[h] for h in tree.query(LineString([a, b]))
+                     if h >= first_later]
+        shown = exposed_mm(a, b, later)
+        if shown > MAX_EXPOSED_MM:
+            out.append(shown)
+    return out
 
 
 def _dist(a, b) -> float:
@@ -248,6 +307,11 @@ def audit_plan(plan: StitchPlan, fabric: FabricPreset,
         audit.thread_length_mm = sum(lengths)
     audit.runtime_seconds = estimate_runtime_seconds(plan, audit.trim_count)
 
+    shown = visible_floats(pattern)
+    audit.visible_float_count = len(shown)
+    audit.visible_float_mm = sum(shown)
+    audit.longest_visible_float_mm = max(shown, default=0.0)
+
     # --- thread sewn outside every region --------------------------------
     polygons = [region.polygon for region, _ in classifications]
     if polygons:
@@ -309,7 +373,8 @@ def format_audit_summary(audit: SewabilityAudit) -> str:
         f"(mean {audit.stitch_mean_mm:.2f}); {audit.stitches_below_min} under "
         f"{MIN_STITCH_LENGTH_MM}mm, {audit.stitches_above_max} over "
         f"{MAX_STITCH_LENGTH_MM}mm; {audit.thread_outside_regions_mm:.0f}mm sewn "
-        f"outside regions; {len(audit.over_dense_regions)} over-dense, "
+        f"outside regions; {audit.visible_float_count} visible uncut strand(s) "
+        f"({audit.visible_float_mm:.0f}mm); {len(audit.over_dense_regions)} over-dense, "
         f"{len(audit.under_dense_regions)} under-dense, "
         f"{len(audit.regions_below_size_floor)} under the size floor.",
     ]

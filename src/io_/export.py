@@ -11,6 +11,7 @@ from dataclasses import replace
 import pyembroidery as pe
 
 from src.pathing.route import needs_jump, needs_trim
+from src.pathing.visibility import LaterCover
 from src.stitches.model import MIN_STITCH_LENGTH_MM, StitchPlan
 from .units import mm_to_units, quantize_point_mm
 
@@ -159,7 +160,8 @@ def stitch_plan_to_pattern(plan: StitchPlan) -> pe.EmbPattern:
     cur_color = None
     cur_pos = None
     prev_block_points: list[tuple[float, float]] | None = None
-    for block in plan.blocks:
+    later_cover = LaterCover(plan.blocks)
+    for block_index, block in enumerate(plan.blocks):
         if block.is_empty():
             continue
         block = replace(block, points_mm=_sewable_points(block.points_mm))
@@ -201,10 +203,17 @@ def stitch_plan_to_pattern(plan: StitchPlan) -> pe.EmbPattern:
             # automatic distance rule either direction: True cuts here
             # even on a short gap; False suppresses a cut even on a
             # long one (the machine still jumps there, just without
-            # trimming first). None (the default) leaves needs_trim's
-            # distance rule in charge, unchanged from before.
-            should_trim = (block.force_trim_before if block.force_trim_before is not None
-                           else needs_trim(gap))
+            # trimming first). None (the default) leaves it to
+            # needs_trim: always past the trim distance, and below it
+            # whenever the float would lie on top where it shows --
+            # this block and everything after it sew over the travel,
+            # so they are what can bury it.
+            if block.force_trim_before is not None:
+                should_trim = block.force_trim_before
+            else:
+                hidden = (not needs_jump(gap)
+                          or later_cover.hidden_after(cur_pos, start, block_index - 1))
+                should_trim = needs_trim(gap, float_hidden=hidden)
             if should_trim:
                 _emit_tie_out(p, prev_block_points[-2], prev_block_points[-1])
                 p.add_stitch_absolute(pe.TRIM, *mm_to_units_pt(cur_pos))

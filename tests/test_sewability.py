@@ -27,12 +27,13 @@ def _thread_mm(points) -> float:
 
 def test_audit_counts_travel_from_the_command_stream():
     """A hand-built plan with known travel: one gap that jumps without
-    a trim (4mm), one that trims (20mm). The audit must report exactly
-    those from the exported command stream, and the entry penetration
-    at each jump landing must not be counted as a 0mm stitch."""
+    a trim (4mm, buried by the next block sewing back over it), one
+    that trims (20mm). The audit must report exactly those from the
+    exported command stream, and the entry penetration at each jump
+    landing must not be counted as a 0mm stitch."""
     blocks = [
         StitchBlock(FILL, [(0, 0), (3, 0), (6, 0)], 0, "a"),
-        StitchBlock(FILL, [(10, 0), (13, 0)], 0, "a"),            # 4mm gap: jump only
+        StitchBlock(FILL, [(10, 0), (7, 0), (5, 0), (8, 0), (11, 0), (13, 0)], 0, "a"),  # 4mm gap: jump only
         StitchBlock(FILL, [(33, 0), (36, 0), (39, 0)], 0, "a"),   # 20mm gap: trim + jump
     ]
     plan = StitchPlan(blocks=blocks, colors=[ThreadColor("c")])
@@ -424,3 +425,20 @@ def test_satin_density_target_accounts_for_pull_compensation():
     wide = _target_density(SATIN, fabric, None, False, width_mm=6.0)
     assert narrow > wide > bare
     assert narrow == pytest.approx(bare * (1.1 + fabric.pull_compensation_mm) / 1.1)
+
+
+def test_fill_connector_inside_a_big_shape_is_split_under_the_maximum():
+    """Regression: two row segments joined across the inside of a big
+    shape were joined with one stitch however far apart they were --
+    8.6mm on the cartoon face at 350mm, over the machine maximum."""
+    from shapely.geometry import Polygon
+
+    from src.stitches.fill import _runs_from_segments
+    from src.stitches.model import MAX_STITCH_LENGTH_MM
+    square = Polygon([(-10, -10), (20, -10), (20, 20), (-10, 20)])
+    runs = _runs_from_segments([[(0.0, 0.0), (1.0, 0.0)], [(9.0, 9.0), (10.0, 9.0)]],
+                               0.0, square.centroid, square)
+    assert len(runs) == 1  # inside the shape: still one run, no jump
+    steps = [math.dist(a, b) for a, b in zip(runs[0], runs[0][1:])]
+    assert max(steps) <= MAX_STITCH_LENGTH_MM
+    assert runs[0][-1] == (10.0, 9.0)

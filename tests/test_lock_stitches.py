@@ -21,13 +21,15 @@ def _kinds_and_points(pattern):
 
 
 def test_no_tie_stitches_when_nothing_is_trimmed():
-    """A plain jump (gap under the trim threshold) is still the same
-    physically continuous thread -- nothing to anchor, so the stitch
-    count should be exactly the two blocks' own points plus one JUMP,
-    no extra tie stitches."""
+    """A plain jump (no trim) is still the same physically continuous
+    thread -- nothing to anchor, so the stitch count should be exactly
+    the two blocks' own points plus one JUMP, no extra tie stitches.
+    The cut is switched off explicitly: across bare fabric like this
+    the automatic rule would now cut (see test_visible_floats.py)."""
     gap = TRIM_THRESHOLD_MM / 2
     a = StitchBlock(RUNNING, [(0.0, 0.0), (2.0, 0.0)], color_index=0, element_id="a")
-    b = StitchBlock(RUNNING, [(2.0 + gap, 0.0), (4.0 + gap, 0.0)], color_index=0, element_id="b")
+    b = StitchBlock(RUNNING, [(2.0 + gap, 0.0), (4.0 + gap, 0.0)], color_index=0,
+                     element_id="b", force_trim_before=False)
     plan = StitchPlan(blocks=[a, b], colors=[THREAD])
     pattern = stitch_plan_to_pattern(plan)
     kinds = [cmd & pe.COMMAND_MASK for _x, _y, cmd in pattern.stitches]
