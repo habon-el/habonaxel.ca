@@ -140,3 +140,18 @@ def test_upscaling_still_catches_a_target_size_that_is_still_too_small(tmp_path)
     with pytest.raises(DigitizeScopeError):
         digitize_image(NEEDS_UPSCALE, "twill", str(tmp_path / "still_small"),
                         target_width_mm=5.0)
+
+
+def test_scaling_keeps_layer_order_and_texture_flags():
+    """Resizing used to rebuild each Region from its polygon, color and
+    id alone, so every resized design lost its back-to-front sewing
+    order and its texture zones."""
+    from dataclasses import replace
+    rs = load_and_extract_regions(INPUT)
+    rs.regions = [replace(r, z_order=7 + i, texture_zone=True, texture_confidence=0.4)
+                  for i, r in enumerate(rs.regions)]
+    scaled, _ = scale_region_set(rs, target_width_mm=80.0)
+    for before, after in zip(rs.regions, scaled.regions):
+        assert after.z_order == before.z_order
+        assert after.texture_zone and after.texture_confidence == 0.4
+        assert after.polygon.is_valid

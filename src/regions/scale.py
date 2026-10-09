@@ -4,6 +4,8 @@ digitizing workflows do first (pre-scaling so density/stitch-length
 calculations are based on the actual output size, not incidental input
 resolution).
 """
+from dataclasses import replace
+
 from shapely import affinity
 
 from src.regions.model import Region, RegionSet
@@ -63,11 +65,21 @@ def scale_region_set(region_set: RegionSet, target_width_mm: float | None = None
     else:
         sx = sy = target_height_mm / content_height
 
-    scaled_regions = [
-        Region(polygon=affinity.scale(r.polygon, xfact=sx, yfact=sy, origin=(0, 0)),
-               color_index=r.color_index, source=r.source, region_id=r.region_id)
-        for r in region_set.regions
-    ]
+    # replace() keeps every other field -- z_order (layer order) and the
+    # texture flags used to be dropped here, so any resized design lost
+    # its back-to-front sewing order. Scaling can also turn a ring that
+    # touches itself at one vertex into a tiny self-intersection (seen
+    # on brush lettering); buffer(0) repairs that with no area change.
+    # Only a ring that was valid before scaling is repaired: buffer(0)
+    # on a genuinely crossed shape (a bowtie) drops half of it, which
+    # is detail loss, not a repair.
+    def _scaled(r: Region) -> Region:
+        poly = affinity.scale(r.polygon, xfact=sx, yfact=sy, origin=(0, 0))
+        if not poly.is_valid and r.polygon.is_valid:
+            poly = poly.buffer(0)
+        return replace(r, polygon=poly)
+
+    scaled_regions = [_scaled(r) for r in region_set.regions]
     scaled = RegionSet(
         regions=scaled_regions, colors=region_set.colors,
         width_mm=content_width * sx, height_mm=content_height * sy,
